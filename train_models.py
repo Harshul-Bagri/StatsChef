@@ -7,7 +7,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
-
+# Trains the models using MapieRegressor and GradientBoostingRegressing. It uses a TimeSeriesSplit to evaluate the models and calculate the mean squared error, the mean absolute error and the R^2 score to evaluate the correctness and accuracy of the mode.
 def train_final_models():
     data = pd.read_csv('preprocessed_data.csv')
     
