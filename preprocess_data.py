@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 from sklearn.preprocessing import RobustScaler
-# Cleans the data and arranges the players in order, and their match stats in descending order. Also introduces the NEXT_PTS, NEXT_REBS and NEXT_AST variables which we will train the models for 
+
 def preprocess_data():
     # Load and clean data
     data = pd.read_csv('nba_player_stats_2024_2025.csv')
@@ -12,57 +12,53 @@ def preprocess_data():
     data['GAME_DATE'] = pd.to_datetime(data['GAME_DATE'], format='%b %d, %Y', errors='coerce')
     data = data.dropna(subset=['GAME_DATE'])
     
-    # Sort by PLAYER_NAME and GAME_DATE in descending order (most recent games first)
+    # Sort by PLAYER_NAME and GAME_DATE (most recent first)
     data = data.sort_values(['PLAYER_NAME', 'GAME_DATE'], ascending=[True, False])
     
-    # Calculate advanced metrics
+    # Calculate advanced metrics (retain original values)
     data['EFF'] = (data['PTS'] + data['REB'] + data['AST'] + data['STL'] + data['BLK'] 
                    - (data['FGA'] - data['FGM']) - (data['FTA'] - data['FTM']) - data['TOV'])
     
-    # Winsorize outliers (top/bottom 1%)
+    # Winsorize outliers (1% on both ends)
     metrics = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
     for metric in metrics:
-        data[metric] = data.groupby('PLAYER_NAME')[metric].transform(
-            lambda x: stats.mstats.winsorize(x, limits=[0.01, 0.01])
-        )
+        data[f'{metric}_WINSOR'] = data.groupby('PLAYER_NAME')[metric].transform(
+            lambda x: stats.mstats.winsorize(x, limits=[0.01, 0.01]))
     
-    # Time-weighted features
+    # Time-weighted features (exponential moving average)
     for player in data['PLAYER_NAME'].unique():
         player_mask = data['PLAYER_NAME'] == player
         for metric in ['PTS', 'REB', 'AST']:
-            # Exponential moving average
+            # EMA and rolling median
             data.loc[player_mask, f'EMA_{metric}'] = (
-                data.loc[player_mask, metric].ewm(alpha=0.3, adjust=False).mean()
-            )
-            # Rolling median
+                data.loc[player_mask, f'{metric}_WINSOR'].ewm(alpha=0.3, adjust=False).mean())
             data.loc[player_mask, f'ROLLING_MED_{metric}'] = (
-                data.loc[player_mask, metric].rolling(5, min_periods=1).median()
-            )
-
-    # Add 5-game rolling averages
+                data.loc[player_mask, f'{metric}_WINSOR'].rolling(5, min_periods=1).median())
+    
+    # Add 5-game rolling average (original PTS)
     data['LAST_5_AVG_PTS'] = data.groupby('PLAYER_NAME')['PTS'].transform(
         lambda x: x.rolling(window=5, min_periods=1).mean()
     )
     
-    # Create targets with outlier filtering
+    # Define features to scale (use winsorized versions to reduce outlier impact)
+    features_to_scale = [
+        'PTS_WINSOR', 'REB_WINSOR', 'AST_WINSOR', 'STL_WINSOR', 'BLK_WINSOR', 'TOV_WINSOR',
+        'EMA_PTS', 'EMA_REB', 'EMA_AST', 'ROLLING_MED_PTS', 'ROLLING_MED_REB', 'ROLLING_MED_AST',
+        'LAST_5_AVG_PTS', 'MIN'
+    ]
+    
+    # Scale features for model training
+    scaler = RobustScaler()
+    data[features_to_scale] = scaler.fit_transform(data[features_to_scale])
+    
+    # Create targets (NEXT_PTS, NEXT_REB, NEXT_AST) using original values
     for metric in ['PTS', 'REB', 'AST']:
         data[f'NEXT_{metric}'] = data.groupby('PLAYER_NAME')[metric].shift(-1)
-        q1 = data[f'NEXT_{metric}'].quantile(0.05)
-        q3 = data[f'NEXT_{metric}'].quantile(0.95)
-        data = data[(data[f'NEXT_{metric}'] >= q1) & (data[f'NEXT_{metric}'] <= q3)]
     
-    # Normalize/Scale features
-    features = [
-        'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV',
-        'FG_PCT', 'FG3_PCT', 'FT_PCT', 'EFF',
-        'EMA_PTS', 'EMA_REB', 'EMA_AST',
-        'ROLLING_MED_PTS', 'ROLLING_MED_REB', 'ROLLING_MED_AST',
-        'LAST_5_AVG_PTS'
-    ]
-    scaler = RobustScaler()
-    data[features] = scaler.fit_transform(data[features])
+    # Remove rows with missing targets
+    data = data.dropna(subset=['NEXT_PTS', 'NEXT_REB', 'NEXT_AST'])
     
-    # Save preprocessed data
+    # Save preprocessed data (retain original stats for display)
     data.to_csv('preprocessed_data.csv', index=False)
     print("✅ Preprocessed data saved")
 

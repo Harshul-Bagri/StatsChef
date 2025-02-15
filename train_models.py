@@ -1,3 +1,4 @@
+"""
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -139,3 +140,55 @@ if __name__ == '__main__':
     for target in targets:
         print(f"\n=== Tuning model for {target} ===")
         tune_hyperparameters(data, target)
+"""
+import pandas as pd
+import joblib
+from mapie.regression import MapieRegressor
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.pipeline import Pipeline
+
+def train_final_models():
+    data = pd.read_csv('preprocessed_data.csv')
+    
+    # Features (use scaled/winsorized versions)
+    features = [
+        'PTS_WINSOR', 'REB_WINSOR', 'AST_WINSOR', 'STL_WINSOR', 'BLK_WINSOR', 'TOV_WINSOR',
+        'EMA_PTS', 'EMA_REB', 'EMA_AST', 'ROLLING_MED_PTS', 'ROLLING_MED_REB', 'ROLLING_MED_AST',
+        'LAST_5_AVG_PTS', 'MIN'
+    ]
+    
+    targets = ['NEXT_PTS', 'NEXT_REB', 'NEXT_AST']
+    
+    models = {}
+    
+    for target in targets:
+        print(f"\n=== Training {target} ===")
+        
+        # Model pipeline with median aggregation
+        model = Pipeline([
+            ('regressor', MapieRegressor(
+                estimator=GradientBoostingRegressor(
+                    loss='huber',
+                    random_state=42,
+                    n_estimators=200,
+                    max_depth=4
+                ),
+                method="plus",
+                cv=5,
+                agg_function="median"  # Use median for predictions
+            ))
+        ])
+        
+        X = data[features]
+        y = data[target]
+        
+        # Train model
+        model.fit(X, y)
+        models[target] = model
+        
+        # Save model
+        joblib.dump(model, f'final_model_{target}.pkl')
+        print(f"✅ Model for {target} saved")
+
+if __name__ == '__main__':
+    train_final_models()
