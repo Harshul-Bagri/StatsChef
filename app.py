@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
-import numpy as np
 
 # Configure page
 st.set_page_config(
@@ -11,7 +11,7 @@ st.set_page_config(
     page_icon="🏀",
     layout="wide"
 )
-#The App is hostel on streamlit for now
+
 # Load resources
 @st.cache_data
 def load_data():
@@ -38,19 +38,16 @@ st.markdown("### Next Game Projections")
 
 def get_latest_stats(player_name):
     player_data = data[data['PLAYER_NAME'] == player_name]
-    return player_data.iloc[0] if not player_data.empty else None
+    return player_data.iloc[0] if not player_data.empty else None  # Use iloc[0] for the latest game
 
-latest_stats = get_latest_stats(player_name)
-
-if latest_stats is not None:
-    col1, col2 = st.columns([2, 3])
-    
-    with col1:
+def display_latest_stats(player_name):
+    latest_stats = get_latest_stats(player_name)
+    if latest_stats is not None:
         st.markdown("### 📊 Latest Game Stats")
         latest_game_date = pd.to_datetime(latest_stats['GAME_DATE']).strftime('%d/%m')
         st.markdown(f"**Date:** {latest_game_date}")
         
-        # Create stats table with safe feature access
+        # Create stats table
         stats_data = {
             'Points': latest_stats.get('PTS', np.nan),
             'Rebounds': latest_stats.get('REB', np.nan),
@@ -59,7 +56,7 @@ if latest_stats is not None:
             'Blocks': latest_stats.get('BLK', np.nan),
             'Efficiency': latest_stats.get('EFF', np.nan),
             '5-Game Avg': latest_stats.get('LAST_5_AVG_PTS', np.nan),
-            'Season Avg': data[data['PLAYER_NAME'] == player_name]['PTS'].mean()
+            'Season Avg': latest_stats.get('SEASON_AVG_PTS', np.nan)
         }
         
         stats_table = pd.DataFrame({
@@ -71,8 +68,12 @@ if latest_stats is not None:
             stats_table.style.format({'Value': '{:.1f}'}),
             use_container_width=True
         )
+    else:
+        st.error("Player not found. Please try another name.")
 
-    with col2:
+def display_next_game_projections(player_name):
+    latest_stats = get_latest_stats(player_name)
+    if latest_stats is not None:
         st.markdown("### 🔮 Next Game Projections")
         
         # Safely prepare input features
@@ -93,31 +94,21 @@ if latest_stats is not None:
             pts_pred, pts_intervals = models['NEXT_PTS'].predict(input_features, alpha=0.05)
             reb_pred, reb_intervals = models['NEXT_REB'].predict(input_features, alpha=0.05)
             ast_pred, ast_intervals = models['NEXT_AST'].predict(input_features, alpha=0.05)
-            
-            # Convert numpy types to Python floats
-            predictions = {
-                'Points': (float(pts_pred[0]), 
-                            [float(pts_intervals[0][0]), float(pts_intervals[0][1])]),
-                'Rebounds': (float(reb_pred[0]), 
-                            [float(reb_intervals[0][0]), float(reb_intervals[0][1])]),
-                'Assists': (float(ast_pred[0]), 
-                            [float(ast_intervals[0][0]), float(ast_intervals[0][1])])
-            }
-            
         except Exception as e:
             st.error(f"Prediction error: {str(e)}")
-            # Fallback predictions without confidence intervals
-            pts_pred = models['NEXT_PTS'].predict(input_features)
-            reb_pred = models['NEXT_REB'].predict(input_features)
-            ast_pred = models['NEXT_AST'].predict(input_features)
-            
-            predictions = {
-                'Points': (float(pts_pred[0]), [float(pts_pred[0]-2), float(pts_pred[0]+2)]),
-                'Rebounds': (float(reb_pred[0]), [float(reb_pred[0]-1), float(reb_pred[0]+1)]),
-                'Assists': (float(ast_pred[0]), [float(ast_pred[0]-1), float(ast_pred[0]+1)])
-            }
+            pts_pred = [models['NEXT_PTS'].predict(input_features)[0]]
+            reb_pred = [models['NEXT_REB'].predict(input_features)[0]]
+            ast_pred = [models['NEXT_AST'].predict(input_features)[0]]
+            pts_intervals = [[pts_pred[0]-2, pts_pred[0]+2]]
+            reb_intervals = [[reb_pred[0]-1, reb_pred[0]+1]]
+            ast_intervals = [[ast_pred[0]-1, ast_pred[0]+1]]
 
-        # Display predictions
+        predictions = {
+            'Points': (float(pts_pred[0]), [float(pts_intervals[0][0]), float(pts_intervals[0][1])]),
+            'Rebounds': (float(reb_pred[0]), [float(reb_intervals[0][0]), float(reb_intervals[0][1])]),
+            'Assists': (float(ast_pred[0]), [float(ast_intervals[0][0]), float(ast_intervals[0][1])])
+        }
+        
         pred_cols = st.columns(3)
         for i, (stat, (value, interval)) in enumerate(predictions.items()):
             with pred_cols[i]:
@@ -137,7 +128,7 @@ if latest_stats is not None:
                 </div>
                 """, unsafe_allow_html=True)
 
-    # Trends visualization
+def display_trends(player_name):
     st.markdown("---")
     st.markdown("### 📈 Performance Trends (Last 30 Games)")
     
@@ -171,8 +162,10 @@ if latest_stats is not None:
     else:
         st.warning("Insufficient data for trend visualization")
 
-else:
-    st.error("Player not found. Please try another name.")
+# Display stats and projections
+display_latest_stats(player_name)
+display_next_game_projections(player_name)
+display_trends(player_name)
 
 st.markdown("---")
 st.markdown("*Data updated through current season | Predictions with 95% confidence intervals*")
