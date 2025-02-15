@@ -2,7 +2,7 @@ from nba_api.stats.endpoints import commonteamroster, playergamelog, teamgamelog
 from nba_api.stats.static import teams
 import pandas as pd
 import time
-
+#Uses the NBA API to get the team roster for a given team and collect their statistics. If you wish to use advanced player metrics like TS%, PER, LEBRON etc. consider adding a timer since the nba api heavily rate limits users after a certain amount of requests.
 # Fetch all NBA teams
 nba_teams = teams.get_teams()
 
