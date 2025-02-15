@@ -11,7 +11,7 @@ st.set_page_config(
     page_icon="🏀",
     layout="wide"
 )
-
+#The App is hostel on streamlit for now
 # Load resources
 @st.cache_data
 def load_data():
