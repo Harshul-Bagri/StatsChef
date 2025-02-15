@@ -1,16 +1,64 @@
 import pandas as pd
 import numpy as np
-from mapie.regression import MapieRegressor
+from scipy import stats
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.preprocessing import RobustScaler
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import TimeSeriesSplit, cross_val_score
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.preprocessing import RobustScaler
+from sklearn.metrics import mean_absolute_error
 import joblib
-# Trains the models using MapieRegressor and GradientBoostingRegressing. It uses a TimeSeriesSplit to evaluate the models and calculate the mean squared error, the mean absolute error and the R^2 score to evaluate the correctness and accuracy of the mode.
-def train_final_models():
-    data = pd.read_csv('preprocessed_data.csv')
+from scipy.stats import randint, uniform
+
+# Load and preprocess data
+def preprocess_data():
+    # Load and clean data
+    data = pd.read_csv('nba_player_stats_2024_2025.csv')
+    data.columns = data.columns.str.strip()
     
+    # Convert and validate dates
+    data['GAME_DATE'] = pd.to_datetime(data['GAME_DATE'], format='%b %d, %Y', errors='coerce')
+    data = data.dropna(subset=['GAME_DATE'])
+    
+    # Sort by PLAYER_NAME and GAME_DATE in descending order (most recent games first)
+    data = data.sort_values(['PLAYER_NAME', 'GAME_DATE'], ascending=[True, False])
+    
+    # Calculate advanced metrics
+    data['EFF'] = (data['PTS'] + data['REB'] + data['AST'] + data['STL'] + data['BLK'] 
+                   - (data['FGA'] - data['FGM']) - (data['FTA'] - data['FTM']) - data['TOV'])
+    
+    # Winsorize outliers (top/bottom 1%)
+    metrics = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
+    for metric in metrics:
+        data[metric] = data.groupby('PLAYER_NAME')[metric].transform(
+            lambda x: stats.mstats.winsorize(x, limits=[0.01, 0.01])
+        )
+    
+    # Time-weighted features
+    for player in data['PLAYER_NAME'].unique():
+        player_mask = data['PLAYER_NAME'] == player
+        for metric in ['PTS', 'REB', 'AST']:
+            # Exponential moving average
+            data.loc[player_mask, f'EMA_{metric}'] = (
+                data.loc[player_mask, metric].ewm(alpha=0.3, adjust=False).mean()
+            )
+            # Rolling median
+            data.loc[player_mask, f'ROLLING_MED_{metric}'] = (
+                data.loc[player_mask, metric].rolling(5, min_periods=1).median()
+            )
+    
+    # Add 5-game rolling averages
+    data['LAST_5_AVG_PTS'] = data.groupby('PLAYER_NAME')['PTS'].transform(
+        lambda x: x.rolling(window=5, min_periods=1).mean()
+    )
+    
+    # Create targets with outlier filtering
+    for metric in ['PTS', 'REB', 'AST']:
+        data[f'NEXT_{metric}'] = data.groupby('PLAYER_NAME')[metric].shift(-1)
+        q1 = data[f'NEXT_{metric}'].quantile(0.05)
+        q3 = data[f'NEXT_{metric}'].quantile(0.95)
+        data = data[(data[f'NEXT_{metric}'] >= q1) & (data[f'NEXT_{metric}'] <= q3)]
+    
+    # Normalize/Scale features
     features = [
         'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV',
         'FG_PCT', 'FG3_PCT', 'FT_PCT', 'EFF',
@@ -18,82 +66,76 @@ def train_final_models():
         'ROLLING_MED_PTS', 'ROLLING_MED_REB', 'ROLLING_MED_AST',
         'LAST_5_AVG_PTS'
     ]
+    scaler = RobustScaler()
+    data[features] = scaler.fit_transform(data[features])
     
-    targets = ['NEXT_PTS', 'NEXT_REB', 'NEXT_AST']
+    # Save preprocessed data
+    data.to_csv('preprocessed_data.csv', index=False)
+    print("✅ Preprocessed data saved")
+    return data
+
+# Hyperparameter tuning with RandomizedSearchCV
+def tune_hyperparameters(data, target):
+    # Define features and target
+    features = [
+        'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV',
+        'FG_PCT', 'FG3_PCT', 'FT_PCT', 'EFF',
+        'EMA_PTS', 'EMA_REB', 'EMA_AST',
+        'ROLLING_MED_PTS', 'ROLLING_MED_REB', 'ROLLING_MED_AST',
+        'LAST_5_AVG_PTS'
+    ]
+    X = data[features]
+    y = data[target]
     
-    best_params = {
-        'NEXT_PTS': {
-            'n_estimators': 200,
-            'learning_rate': 0.15,
-            'max_depth': 5,
-            'min_samples_leaf': 20,
-            'max_features': 0.8
-        },
-        'NEXT_REB': {
-            'n_estimators': 180,
-            'learning_rate': 0.18,
-            'max_depth': 4,
-            'min_samples_leaf': 35
-        },
-        'NEXT_AST': {
-            'n_estimators': 150,
-            'learning_rate': 0.12,
-            'max_depth': 4,
-            'min_samples_leaf': 30
-        }
+    # Define the model pipeline
+    pipeline = Pipeline([
+        ('scaler', RobustScaler()),
+        ('regressor', GradientBoostingRegressor(random_state=42))
+    ])
+    
+    # Define the hyperparameter distribution
+    param_dist = {
+        'regressor__n_estimators': randint(100, 300),
+        'regressor__learning_rate': uniform(0.01, 0.2),
+        'regressor__max_depth': randint(3, 6),
+        'regressor__min_samples_split': randint(2, 11),
+        'regressor__min_samples_leaf': randint(1, 5),
+        'regressor__max_features': ['sqrt', 'log2']
     }
     
-    models = {}
+    # Initialize RandomizedSearchCV
+    random_search = RandomizedSearchCV(
+        estimator=pipeline,
+        param_distributions=param_dist,
+        n_iter=50,  # Number of parameter settings sampled
+        scoring='neg_mean_absolute_error',
+        cv=TimeSeriesSplit(n_splits=5),  # Time-series cross-validation
+        n_jobs=-1,
+        verbose=2,
+        random_state=42
+    )
     
-    for target in targets:
-        print(f"\n=== Training {target} ===")
-        
-        # Adjusted Mapie configuration
-        model = Pipeline([
-            ('scaler', RobustScaler()),
-            ('regressor', MapieRegressor(
-                estimator=GradientBoostingRegressor(
-                    loss='huber',
-                    random_state=42,
-                    **best_params[target]
-                ),
-                method="plus",  # Changed to "plus"
-                cv=TimeSeriesSplit(n_splits=5, gap=10),  # Adjusted n_splits and gap
-                agg_function="mean"  # Changed to mean
-            ))
-        ])
-        
-        X = data[features]
-        y = data[target]
-        
-        # Check for NaN values
-        if X.isnull().any().any() or y.isnull().any():
-            print(f"Warning: NaN values found in {target}. Cleaning data...")
-            X = X.fillna(X.median())  # Fill NaN with median
-            y = y.fillna(y.median())
-        
-        # Modified cross-validation
-        tscv = TimeSeriesSplit(n_splits=5, gap=10)
-        scores = cross_val_score(
-            model, X, y,
-            cv=tscv,
-            scoring='neg_mean_absolute_error',
-            n_jobs=-1,
-            error_score='raise'
-        )
-        print(f"Cross-val MAE: {-scores.mean():.2f} ± {scores.std():.2f}")
-        
-        # Final training
-        model.fit(X, y)
-        models[target] = model
-        
-        # Correct prediction extraction
-        preds = model.predict(X)
-        print(f"MAE: {mean_absolute_error(y, preds):.2f}")
-        print(f"R²: {r2_score(y, preds):.2f}")
+    # Fit RandomizedSearchCV
+    random_search.fit(X, y)
     
-    joblib.dump(models, 'final_models.pkl')
-    print("\n✅ Models saved")
+    # Get the best parameters
+    best_params = random_search.best_params_
+    print(f"Best Parameters for {target}:", best_params)
+    
+    # Save the best model
+    best_model = random_search.best_estimator_
+    joblib.dump(best_model, f'best_model_{target}.pkl')
+    print(f"✅ Best model for {target} saved")
+    
+    return best_model
 
+# Main function
 if __name__ == '__main__':
-    train_final_models()
+    # Preprocess data
+    data = preprocess_data()
+    
+    # Tune hyperparameters for each target
+    targets = ['NEXT_PTS', 'NEXT_REB', 'NEXT_AST']
+    for target in targets:
+        print(f"\n=== Tuning model for {target} ===")
+        tune_hyperparameters(data, target)
