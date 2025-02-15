@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 from sklearn.preprocessing import RobustScaler
-
+# Cleans the data and arranges the players in order, and their match stats in descending order. Also introduces the NEXT_PTS, NEXT_REBS and NEXT_AST variables which we will train the models for 
 def preprocess_data():
     # Load and clean data
     data = pd.read_csv('nba_player_stats_2024_2025.csv')
