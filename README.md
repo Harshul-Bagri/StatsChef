@@ -11,6 +11,7 @@ Future updates I'm looking to make:
     Adding player position ratings (for example, players who are playing out of position will have a lower rating)
     Adding team ratings (for example, the team's overall pace, their three point shooting percentage, etc.)
     Adding player ratings (for example, a player's overall pace, their three point shooting percentage, etc.) 
+    Connecting the frontend to the api directly so that it requests stats upon page load and updates the stats in real time, would also solve the rate-limit issue
 
 Currently, this model gives a projection for the next game based on the season averages and the 5 game rolling averages. 
 Please let me know if you have any potential updates or if it causes any bugs.
