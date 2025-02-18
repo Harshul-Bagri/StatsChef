@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 from sklearn.preprocessing import RobustScaler
+import joblib 
 
 def preprocess_data():
     # Load and clean data
@@ -50,6 +51,9 @@ def preprocess_data():
     # Scale features for model training
     scaler = RobustScaler()
     data[features_to_scale] = scaler.fit_transform(data[features_to_scale])
+
+    # Inside preprocess_data() function after scaling:
+    joblib.dump(scaler, 'robust_scaler.pkl')
     
     # Create targets (NEXT_PTS, NEXT_REB, NEXT_AST) using original values
     for metric in ['PTS', 'REB', 'AST']:
