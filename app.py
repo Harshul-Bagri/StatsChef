@@ -36,29 +36,22 @@ def is_player_active(player_id):
         print(f"Error checking player status for ID {player_id}: {e}")
         return False
 
-# Fetch active players
-@st.cache_data
-def get_active_players():
-    all_players = players.get_players()
-    active_players = []
-    for player in all_players:
-        if is_player_active(player['id']):
-            active_players.append(player)
-    return active_players
-
 # Sidebar controls
 st.sidebar.title("Controls")
-active_players = get_active_players()
-player_names = sorted([p['full_name'] for p in active_players])
-player_name = st.sidebar.selectbox('Select Player', player_names, index=0)
+player_name = st.sidebar.text_input('Enter Player Name', '')
 
 def fetch_player_data(player_name):
     """Fetch game log for selected player using NBA API"""
     # Find player ID
-    player_dict = [p for p in active_players if p['full_name'] == player_name]
+    all_players = players.get_players()
+    player_dict = [p for p in all_players if p['full_name'].lower() == player_name.lower()]
     if not player_dict:
         return None
     player_id = player_dict[0]['id']
+    
+    # Check if player is active
+    if not is_player_active(player_id):
+        return None
     
     # Fetch current season data
     gamelog = playergamelog.PlayerGameLog(
@@ -131,48 +124,51 @@ def preprocess_data(raw_df):
     return raw_df, scaled_features[0]
 
 # Main app logic
-raw_data = fetch_player_data(player_name)
-if raw_data is None:
-    st.error("Player data not found!")
-    st.stop()
+if player_name:
+    raw_data = fetch_player_data(player_name)
+    if raw_data is None:
+        st.error("Player not found or not active!")
+        st.stop()
 
-# Preprocess the data
-latest_raw, scaled_features = preprocess_data(raw_data)
-if scaled_features is None:
-    st.error("Error processing data!")
-    st.stop()
+    # Preprocess the data
+    latest_raw, scaled_features = preprocess_data(raw_data)
+    if scaled_features is None:
+        st.error("Error processing data!")
+        st.stop()
 
-# Display latest game stats
-st.title(f"🏀 {player_name}'s Performance")
-st.header("📊 Latest Game Stats")
+    # Display latest game stats
+    st.title(f"🏀 {player_name}'s Performance")
+    st.header("📊 Latest Game Stats")
 
-# Use the preprocessed data (latest_raw) instead of raw_data
-latest_game = latest_raw.iloc[0]
-st.write(f"**Date:** {pd.to_datetime(latest_game['GAME_DATE']).strftime('%Y-%m-%d')}")
+    # Use the preprocessed data (latest_raw) instead of raw_data
+    latest_game = latest_raw.iloc[0]
+    st.write(f"**Date:** {pd.to_datetime(latest_game['GAME_DATE']).strftime('%Y-%m-%d')}")
 
-stats = {
-    'Points': latest_game['PTS'],
-    'Rebounds': latest_game['REB'],
-    'Assists': latest_game['AST'],
-    'Steals': latest_game['STL'],
-    'Blocks': latest_game['BLK'],
-    'Efficiency': latest_game['EFF'],  # Now available
-    '5-Game Avg': latest_raw['LAST_5_AVG_PTS'].iloc[0],
-    'Season Avg': latest_raw['PTS'].mean()
-}
-st.table(pd.DataFrame.from_dict(stats, orient='index', columns=['Value']))
+    stats = {
+        'Points': latest_game['PTS'],
+        'Rebounds': latest_game['REB'],
+        'Assists': latest_game['AST'],
+        'Steals': latest_game['STL'],
+        'Blocks': latest_game['BLK'],
+        'Efficiency': latest_game['EFF'],  # Now available
+        '5-Game Avg': latest_raw['LAST_5_AVG_PTS'].iloc[0],
+        'Season Avg': latest_raw['PTS'].mean()
+    }
+    st.table(pd.DataFrame.from_dict(stats, orient='index', columns=['Value']))
 
-# Predictions
-st.header("🔮 Next Game Projections")
-input_data = np.array(scaled_features).reshape(1, -1)
+    # Predictions
+    st.header("🔮 Next Game Projections")
+    input_data = np.array(scaled_features).reshape(1, -1)
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    pts_pred = models['NEXT_PTS'].predict(input_data)[0]
-    st.metric("Predicted Points", f"{pts_pred:.1f}")
-with col2:
-    reb_pred = models['NEXT_REB'].predict(input_data)[0]
-    st.metric("Predicted Rebounds", f"{reb_pred:.1f}")
-with col3:
-    ast_pred = models['NEXT_AST'].predict(input_data)[0]
-    st.metric("Predicted Assists", f"{ast_pred:.1f}")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        pts_pred = models['NEXT_PTS'].predict(input_data)[0]
+        st.metric("Predicted Points", f"{pts_pred:.1f}")
+    with col2:
+        reb_pred = models['NEXT_REB'].predict(input_data)[0]
+        st.metric("Predicted Rebounds", f"{reb_pred:.1f}")
+    with col3:
+        ast_pred = models['NEXT_AST'].predict(input_data)[0]
+        st.metric("Predicted Assists", f"{ast_pred:.1f}")
+else:
+    st.info("Please enter a player's name in the sidebar to get started.")
