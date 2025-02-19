@@ -1,70 +1,79 @@
 import pandas as pd
 import numpy as np
-from scipy import stats
+from scipy.stats import mstats
 from sklearn.preprocessing import RobustScaler
-import joblib 
+import joblib
 
-def preprocess_data():
-    # Load and clean data
-    data = pd.read_csv('nba_player_stats_2024_2025.csv')
-    data.columns = data.columns.str.strip()
+def load_team_stats():
+    """Load and process team stats from CSV with correct column names"""
+    team_stats = pd.read_csv('nba_team_stats_2024_2025.csv')
+    team_stats['Team'] = team_stats['Team'].str.replace('*', '').str.strip()
+    return team_stats[['Team', 'DEF_FG%', 'DEF_3P%', 'DEF_PTS']]
+
+def calculate_advanced_metrics(player_df):
+    """Enhance player data with advanced metrics"""
+    # Load team defensive stats
+    team_stats = load_team_stats()
     
-    # Convert and validate dates
-    data['GAME_DATE'] = pd.to_datetime(data['GAME_DATE'], format='%b %d, %Y', errors='coerce')
-    data = data.dropna(subset=['GAME_DATE'])
+    # Extract opponent from the "OPPONENT" column
+    player_df['OPPONENT'] = player_df['OPPONENT'].str.split().str[-1]
     
-    # Sort by PLAYER_NAME and GAME_DATE (most recent first)
-    data = data.sort_values(['PLAYER_NAME', 'GAME_DATE'], ascending=[True, False])
-    
-    # Calculate advanced metrics (retain original values)
-    data['EFF'] = (data['PTS'] + data['REB'] + data['AST'] + data['STL'] + data['BLK'] 
-                   - (data['FGA'] - data['FGM']) - (data['FTA'] - data['FTM']) - data['TOV'])
-    
-    # Winsorize outliers (1% on both ends)
-    metrics = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
-    for metric in metrics:
-        data[f'{metric}_WINSOR'] = data.groupby('PLAYER_NAME')[metric].transform(
-            lambda x: stats.mstats.winsorize(x, limits=[0.01, 0.01]))
-    
-    # Time-weighted features (exponential moving average)
-    for player in data['PLAYER_NAME'].unique():
-        player_mask = data['PLAYER_NAME'] == player
-        for metric in ['PTS', 'REB', 'AST']:
-            # EMA and rolling median
-            data.loc[player_mask, f'EMA_{metric}'] = (
-                data.loc[player_mask, f'{metric}_WINSOR'].ewm(alpha=0.3, adjust=False).mean())
-            data.loc[player_mask, f'ROLLING_MED_{metric}'] = (
-                data.loc[player_mask, f'{metric}_WINSOR'].rolling(5, min_periods=1).median())
-    
-    # Add 5-game rolling average (original PTS)
-    data['LAST_5_AVG_PTS'] = data.groupby('PLAYER_NAME')['PTS'].transform(
-        lambda x: x.rolling(window=5, min_periods=1).mean()
+    # Merge with team stats
+    player_df = pd.merge(
+        player_df,
+        team_stats,
+        left_on='OPPONENT',
+        right_on='Team',
+        how='left'
     )
     
-    # Define features to scale (use winsorized versions to reduce outlier impact)
-    features_to_scale = [
-        'PTS_WINSOR', 'REB_WINSOR', 'AST_WINSOR', 'STL_WINSOR', 'BLK_WINSOR', 'TOV_WINSOR',
-        'EMA_PTS', 'EMA_REB', 'EMA_AST', 'ROLLING_MED_PTS', 'ROLLING_MED_REB', 'ROLLING_MED_AST',
-        'LAST_5_AVG_PTS', 'MIN'
+    # Convert MIN column to minutes (handle both int and MM:SS formats)
+    def convert_minutes(min_value):
+        if isinstance(min_value, str) and ':' in min_value:
+            # Handle MM:SS format
+            minutes, seconds = min_value.split(':')
+            return int(minutes) + int(seconds) / 60
+        elif isinstance(min_value, (int, float)):
+            # Handle integer or float (assume it's already in minutes)
+            return min_value
+        else:
+            # Handle unexpected formats (e.g., NaN or invalid strings)
+            return 0  # or np.nan if you prefer to handle missing values differently
+    
+    player_df['MIN'] = player_df['MIN'].apply(convert_minutes)
+    
+    # Calculate advanced metrics
+    player_df['TS%'] = player_df['PTS'] / (2 * (player_df['FGA'] + 0.44 * player_df['FTA']))
+    
+    return player_df.drop(columns=['Team'])
+
+def preprocess_data():
+    # Load and process data
+    players = pd.read_csv('nba_player_stats_2024_2025.csv')
+    players = calculate_advanced_metrics(players)
+    
+    # Winsorize outliers
+    for metric in ['PTS', 'REB', 'AST']:
+        players[f'{metric}_WINSOR'] = mstats.winsorize(players[metric], limits=[0.01, 0.01])
+    
+    # Define features using available columns
+    features = [
+        'PTS_WINSOR', 'REB_WINSOR', 'AST_WINSOR',
+        'DEF_FG%', 'DEF_3P%', 'TS%', 'MIN'
     ]
     
-    # Scale features for model training
+    # Scale features
     scaler = RobustScaler()
-    data[features_to_scale] = scaler.fit_transform(data[features_to_scale])
+    players[features] = scaler.fit_transform(players[features])
+    joblib.dump(scaler, 'advanced_scaler.pkl')
+    
+    # Create targets
+    for stat in ['PTS', 'REB', 'AST']:
+        players[f'NEXT_{stat}'] = players.groupby('PLAYER_NAME')[stat].shift(-1)
 
-    # Inside preprocess_data() function after scaling:
-    joblib.dump(scaler, 'robust_scaler.pkl')
-    
-    # Create targets (NEXT_PTS, NEXT_REB, NEXT_AST) using original values
-    for metric in ['PTS', 'REB', 'AST']:
-        data[f'NEXT_{metric}'] = data.groupby('PLAYER_NAME')[metric].shift(-1)
-    
-    # Remove rows with missing targets
-    data = data.dropna(subset=['NEXT_PTS', 'NEXT_REB', 'NEXT_AST'])
-    
-    # Save preprocessed data (retain original stats for display)
-    data.to_csv('preprocessed_data.csv', index=False)
-    print("✅ Preprocessed data saved")
+    # Replace dropna() with fillna()
+    players.fillna(0).to_csv('preprocessed_data_advanced.csv', index=False)
+    print("✅ Preprocessing complete")
 
 if __name__ == '__main__':
     preprocess_data()
