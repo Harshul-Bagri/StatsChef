@@ -1,61 +1,109 @@
-from nba_api.stats.endpoints import commonteamroster, playergamelog, teamgamelog
-from nba_api.stats.static import teams
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from nba_api.stats.endpoints import commonteamroster, playergamelog
+from nba_api.stats.static import teams
 import time
-#Uses the NBA API to get the team roster for a given team and collect their statistics. If you wish to use advanced player metrics like TS%, PER, LEBRON etc. consider adding a timer since the nba api heavily rate limits users after a certain amount of requests.
-# Fetch all NBA teams
-nba_teams = teams.get_teams()
+from io import StringIO
 
-# Create an empty DataFrame to store all player stats and team stats
-all_player_stats = pd.DataFrame()
-all_team_stats = pd.DataFrame()
-
-# Loop through each team and fetch active players
-for team in nba_teams:
-    team_id = team['id']
-    team_name = team['full_name']
-    print(f"Fetching active players and team stats for team: {team_name}")
-
+def scrape_basketball_ref_stats():
+    """Scrape both offensive and defensive team stats from Basketball Reference"""
+    base_url = "https://www.basketball-reference.com/leagues/NBA_2025.html"
+    
     try:
-        # Fetch the team roster for the 2024-2025 season
-        roster = commonteamroster.CommonTeamRoster(team_id=team_id, season='2024-25')
-        roster_data = roster.get_data_frames()[0]
+        response = requests.get(base_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Fetch team game logs for the 2024-2025 season
-        team_gamelog = teamgamelog.TeamGameLog(team_id=team_id, season='2024-25')
-        team_stats = team_gamelog.get_data_frames()[0]
+        # Scrape offensive stats (Team Per Game)
+        off_table = soup.find('table', {'id': 'per_game-team'})
+        off_df = pd.read_html(StringIO(str(off_table)))[0]
+        off_df = off_df[off_df['Team'] != 'Team'].dropna(axis=1, how='all')
+        off_df.columns = [f"OFF_{col}" if col not in ['Rk', 'Team'] else col for col in off_df.columns]
 
-        # Add team name to the team stats
-        team_stats['TEAM_NAME'] = team_name
+        # Scrape defensive stats (Opponent Per Game)
+        def_table = soup.find('table', {'id': 'per_game-opponent'})
+        def_df = pd.read_html(StringIO(str(def_table)))[0]
+        def_df = def_df[def_df['Team'] != 'Team'].dropna(axis=1, how='all')
+        def_df.columns = [f"DEF_{col}" if col not in ['Rk', 'Team'] else col for col in def_df.columns]
 
-        # Append team stats to the main DataFrame
-        all_team_stats = pd.concat([all_team_stats, team_stats], ignore_index=True)
+        # Merge and clean data
+        merged_df = pd.merge(
+            off_df,
+            def_df,
+            on='Team',
+            suffixes=('_off', '_def')
+        )
 
-        # Fetch game logs for each active player
-        for _, player in roster_data.iterrows():
-            player_id = player['PLAYER_ID']
-            player_name = player['PLAYER']
+        # Clean team names and set index
+        merged_df['Team'] = merged_df['Team'].str.replace('*', '', regex=False)
+        return merged_df.drop(columns=['Rk_off', 'Rk_def']).reset_index(drop=True)
 
-            try:
-                # Fetch game logs for the 2024-2025 season
-                gamelog = playergamelog.PlayerGameLog(player_id=player_id, season='2024-25')
-                player_stats = gamelog.get_data_frames()[0]
-
-                # Add player name and team to the stats
-                player_stats['PLAYER_NAME'] = player_name
-                player_stats['TEAM_NAME'] = team_name
-
-                # Append to the main DataFrame
-                all_player_stats = pd.concat([all_player_stats, player_stats], ignore_index=True)
-                print(f"Fetched data for {player_name} ({team_name})")
-                time.sleep(0.1)
-            except Exception as e:
-                print(f"Failed to fetch data for {player_name}: {e}")
     except Exception as e:
-        print(f"Failed to fetch roster or team stats for team {team_name}: {e}")
+        print(f"Error scraping Basketball Reference: {e}")
+        return pd.DataFrame()
 
-# Save the data to CSV files
-all_player_stats.to_csv('nba_player_stats_2024_2025.csv', index=False)
-all_team_stats.to_csv('nba_team_stats_2024_2025.csv', index=False)
-print("Player stats saved to nba_player_stats_2024_2025.csv")
-print("Team stats saved to nba_team_stats_2024_2025.csv")
+def fetch_nba_player_stats():
+    """Fetch player game logs from NBA API"""
+    all_players = pd.DataFrame()
+    nba_teams = teams.get_teams()
+    
+    for team in nba_teams:
+        team_id = team['id']
+        team_name = team['full_name']
+        print(f"Processing {team_name}...")
+        
+        try:
+            # Get team roster
+            roster = commonteamroster.CommonTeamRoster(team_id=team_id, season='2024-25')
+            players = roster.get_data_frames()[0]
+            
+            # Get player game logs
+            for _, player in players.iterrows():
+                player_id = player['PLAYER_ID']
+                player_name = player['PLAYER']
+                
+                try:
+                    gamelog = playergamelog.PlayerGameLog(
+                        player_id=player_id, 
+                        season='2024-25',
+                        season_type_all_star='Regular Season'
+                    )
+                    player_stats = gamelog.get_data_frames()[0]
+                    
+                    # Add player name and team name to the stats
+                    player_stats['PLAYER_NAME'] = player_name
+                    player_stats['TEAM'] = team_name
+                    
+                    # Concatenate with all players
+                    all_players = pd.concat([all_players, player_stats], ignore_index=True)
+                    time.sleep(0.6)  # Rate limit protection
+                except Exception as e:
+                    print(f"Error fetching {player_name}: {str(e)[:100]}...")
+                    
+        except Exception as e:
+            print(f"Error processing {team_name}: {str(e)[:100]}...")
+    
+    # Standardize column names
+    all_players.rename(columns={'GAME_DATE': 'DATE', 'MATCHUP': 'OPPONENT'}, inplace=True)
+    return all_players
+
+def main():
+    # Scrape team stats from Basketball Reference
+    print("Scraping team stats from Basketball Reference...")
+    team_stats = scrape_basketball_ref_stats()
+    
+    # Fetch player stats from NBA API
+    print("\nFetching player stats from NBA API...")
+    player_stats = fetch_nba_player_stats()
+    
+    # Save data
+    team_stats.to_csv('nba_team_stats_2024_2025.csv', index=False)
+    player_stats.to_csv('nba_player_stats_2024_2025.csv', index=False)
+    
+    print(f"\nSuccessfully saved data!")
+    print(f"Team stats shape: {team_stats.shape}")
+    print(f"Player stats shape: {player_stats.shape}")
+
+if __name__ == "__main__":
+    main()
